@@ -1,0 +1,26 @@
+-- Triggers
+-- USE SalesDB;
+
+-- CREATE TABLE Sales.EmployeeLogs (
+--     LogID INT IDENTITY(1,1) PRIMARY KEY,
+--     EmployeeID INT,
+--     LogMessage VARCHAR (255),
+--     LogDate DATE
+-- )
+
+-- INSERT INTO Sales.Employees
+-- VALUES
+-- (7, 'Daria', 'Doe', 'HR', '2000-01-01', 'F', 80000, 3)
+
+-- SELECT * FROM Sales.EmployeeLogs
+
+CREATE TRIGGER TrgNewEmployees ON Sales.Employees
+AFTER INSERT AS
+BEGIN
+    INSERT INTO Sales.EmployeeLogs (EmployeeID, LogMessage, LogDate)
+    SELECT
+        EmployeeID,
+        'New Employee Added = ' + CAST(EmployeeID AS VARCHAR),
+        GETDATE()
+    FROM INSERTED
+END
