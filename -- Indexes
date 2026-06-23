@@ -1,0 +1,297 @@
+-- Indexes
+USE SalesDB; 
+
+SELECT *
+INTO Sales.DBCustomers -- it has heap structure
+FROM Sales.Customers
+
+-- Full scan (Cause of heap structure)
+SELECT *
+FROM Sales.DBCustomers
+WHERE CustomerID = 1
+
+-- Creating clustered index (Only one in table, ordered)
+CREATE CLUSTERED INDEX idx_DBCustomers_CustomerID
+ON Sales.DBCustomers (CustomerID)
+
+DROP INDEX idx_DBCustomers_CustomerID ON Sales.DBCustomers
+
+
+CREATE NONCLUSTERED INDEX idx_DBCustomers_LastName
+ON Sales.DBCustomers (LastName)
+
+CREATE INDEX idx_DBCustomers_FirstName
+ON Sales.DBCustomers (FirstName)
+
+SELECT *
+FROM Sales.DBCustomers
+WHERE FirstName = 'Anna'
+
+-- Composite Index
+SELECT *
+FROM Sales.DBCustomers
+WHERE Country = 'USA' AND Score > 500 -- index will be used
+
+SELECT *
+FROM Sales.DBCustomers
+WHERE Score > 500 -- index won't be used
+
+CREATE INDEX idx_DBCustomers_CountryScore
+ON Sales.DBCustomers (Country, Score) -- order is important
+
+-- Columnstore Index (only one per table)
+DROP INDEX [idx_DBCustomers_CustomerID] on Sales.DBCustomers
+
+CREATE CLUSTERED COLUMNSTORE INDEX idx_DBCustomers_CS
+ON Sales.DBCustomers
+
+-- Adding AdventureWorksDW2025 DB
+RESTORE FILELISTONLY 
+FROM DISK = '/var/opt/mssql/data/AdventureWorksDW2025.bak';
+
+RESTORE DATABASE AdventureWorksDW2025
+FROM DISK = '/var/opt/mssql/data/AdventureWorksDW2025.bak'
+WITH 
+    MOVE 'AdventureWorksDW' TO '/var/opt/mssql/data/AdventureWorksDW2025.mdf',
+    MOVE 'AdventureWorksDW_log' TO '/var/opt/mssql/data/AdventureWorksDW2025_log.ldf',
+    REPLACE;
+
+USE AdventureWorksDW2025;
+
+-- Heap (No indexes)
+/* 
+    Fast inserts
+*/
+SELECT *
+INTO FactInternetSales_HP
+FROM FactInternetSales
+
+-- Clustured Index
+/* 
+    For primary keys (important sorting)
+    OLTP
+*/
+-- RowStore
+SELECT *
+INTO FactInternetSales_RS
+FROM FactInternetSales
+
+CREATE CLUSTERED INDEX idx_FactInternetSales_RS_PK
+ON FactInternetSales_RS (SalesOrderNumber, SalesOrderLineNumber)
+-- Nonclustered Index
+/* 
+    For non-PK columns (FK, Joins and Fliters)
+*/
+-- ColumnStore Index
+/* 
+    For Analytical queries (Reduce size of large tables)
+    OLAP
+*/
+SELECT *
+INTO FactInternetSales_CS
+FROM FactInternetSales
+
+CREATE CLUSTERED COLUMNSTORE INDEX idx_FactInternetSales_CS_PK
+ON FactInternetSales_CS
+
+-- Check Data used
+EXEC sp_spaceused 'FactInternetSales_HP'; -- 2
+EXEC sp_spaceused 'FactInternetSales_RS'; -- 3
+EXEC sp_spaceused 'FactInternetSales_CS'; -- 1
+
+-- Unique Index (No duplicates)
+/* 
+    Enforce Uniqueness
+    Improve Query Speed
+*/
+USE SalesDB;
+SELECT * 
+FROM Sales.Products
+
+CREATE UNIQUE NONCLUSTERED INDEX idx_Products_Product
+ON Sales.Products (Product)
+
+INSERT INTO Sales.Products (ProductID, Product)
+VALUES (106, 'Bottle') -- will not work; duplicates
+
+-- Filer Index (Meet specific condition) - cannot use in clustered and columnstore index
+/* 
+    Target Subset of Data
+    Reduce size of index
+*/
+SELECT *
+FROM Sales.Customers
+WHERE Country = 'USA'
+
+CREATE NONCLUSTERED INDEX idx_Customers_Country
+ON Sales.Customers (Country)
+WHERE Country = 'USA'
+
+-- CREATE [UNIQUE] [CLUSTERED | NONCLUSTERED] [COLUMNSTORE] INDEX index_name
+-- ON table_name (column1, column2, ...)
+-- WHERE [Condition]
+
+-- ==============================================
+-- INDEX MANAGEMENT
+-- ==============================================
+-- 1. Monitor usage
+-- All indexes of table
+sp_helpindex 'Sales.DBCustomers'
+
+SELECT *
+FROM sys.tables
+
+SELECT 
+    t.name as table_name,
+    idx.name AS index_name,
+    idx.type_desc AS indes_type,
+    idx.is_primary_key AS primary_key,
+    idx.is_unique,
+    idx.is_disabled,
+    s.user_seeks,
+    s.user_scans,
+    s.user_lookups,
+    s.last_user_update,
+    COALESCE(s.last_user_seek,  s.last_user_scan) AS last_update
+FROM sys.indexes idx
+JOIN sys.tables t
+ON idx.object_id = t.object_id
+LEFT JOIN sys.dm_db_index_usage_stats as s
+ON s.object_id = idx.object_id
+AND s.index_id = idx.index_id
+ORDER BY t.name, idx.name
+
+SELECT *
+FROM Sales.Products
+WHERE Product = 'Caps'
+
+-- 2. Monitor missing indexes
+USE AdventureWorksDW2025;
+SELECT 
+    fs.SalesOrderNumber,
+    dp.EnglishProductName,
+    dp.Color
+FROM FactInternetSales fs
+INNER JOIN DimProduct dp
+ON fs.ProductKey = dp.ProductKey
+WHERE dp.Color = 'Black'
+AND fs.OrderDateKey BETWEEN 20101229 AND 20101231
+
+SELECT * 
+FROM sys.dm_db_missing_index_details
+
+-- 3. Monitor duplicate indexes
+USE SalesDB;
+SELECT 
+    tbl.name AS TableName,
+    col.name AS IndexColumn,
+    idx.name AS IndexName,
+    idx.type_desc AS IndexType,
+    COUNT(*) OVER (PARTITION BY tbl.name, col.name) ColumnCount
+FROM sys.indexes AS idx
+JOIN sys.tables tbl ON idx.object_id = tbl.object_id
+JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
+JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
+ORDER BY ColumnCount DESC
+
+-- 4. Update statistics
+SELECT 
+    SCHEMA_NAME(t.schema_id) AS SchemaName,
+    t.name AS TableName,
+    s.name AS StatisticName,
+    sp.last_updated AS LastUpdate,
+    DATEDIFF(day, sp.last_updated, GETDATE()) AS LastUpdateDay,
+    sp.rows AS 'Rows',
+    sp.modification_counter AS ModificationSinceLastUpdate
+FROM sys.stats AS s
+JOIN sys.tables AS t
+ON s.object_id = t.object_id
+CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) AS sp
+ORDER BY sp.modification_counter DESC;
+
+UPDATE STATISTICS Sales.Employees _WA_Sys_00000002_4AB81AF0
+
+UPDATE STATISTICS Sales.Employees
+
+-- Update all statistics
+EXEC sp_updatestats
+
+-- 5. Monitoring fragmentation
+USE SalesDB;
+SELECT 
+    tbl.name AS TableName,
+    idx.name AS IndexName,
+    s.avg_fragmentation_in_percent,
+    s.page_count
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'LIMITED') AS s
+INNER JOIN sys.tables tbl
+ON s.object_id = tbl.object_id
+INNER JOIN sys.indexes AS idx
+ON idx.object_id = s.object_id
+AND idx.index_id = s.index_id
+ORDER BY s.avg_fragmentation_in_percent DESC
+
+ALTER INDEX idx_Customers_Country ON Sales.Customers REORGANIZE
+ALTER INDEX idx_Customers_Country ON Sales.Customers REBUILD -- longer (drop and build again)
+
+-- ==============================================
+-- Execution plan
+-- ==============================================
+-- Basics
+/*
+shift + cmd + P -> Enable Actual Plan/Estimated Plan
+object: can find which index has been used in query
+ */
+USE AdventureWorksDW2025;
+SELECT *
+FROM FactResellerSales
+ORDER BY SalesOrderNumber
+
+SELECT *
+FROM FactResellerSales_HP
+ORDER BY SalesOrderNumber -- consumes more cause of sortong data -> slower
+
+SELECT *
+FROM FactResellerSales
+WHERE CarrierTrackingNumber = '4911-403C-98'
+
+CREATE NONCLUSTERED INDEX idx_FactReseller_CTA
+ON FactResellerSales (CarrierTrackingNumber)
+
+SELECT *
+FROM FactResellerSales_HP
+WHERE CarrierTrackingNumber = '4911-403C-98'
+
+-- Rowstore and Columnstore
+-- Query 1: Query cost (relative to the script): 11.52%
+SELECT 
+    p.EnglishProductName AS ProductName,
+    SUM(s.SalesAmount) AS TotalSales
+FROM FactResellerSales_HP s
+JOIN DimProduct p
+ON p.ProductKey = s.ProductKey
+GROUP BY p.EnglishProductName
+
+-- Query 2: Query cost (relative to the script): 88.48%
+SELECT 
+    p.EnglishProductName AS ProductName,
+    SUM(s.SalesAmount) AS TotalSales
+FROM FactResellerSales s
+JOIN DimProduct p
+ON p.ProductKey = s.ProductKey
+GROUP BY p.EnglishProductName
+
+CREATE CLUSTERED COLUMNSTORE INDEX idx_FactResellerSalesHP
+ON FactResellerSales_HP
+
+-- ==============================================
+-- SQL Hints
+-- ==============================================
+USE SalesDB;
+SELECT
+    o.Sales,
+    c.Country
+FROM Sales.Orders AS o
+LEFT JOIN Sales.Customers AS c WITH (INDEX([PK_customers]))
+ON o.CustomerID = c.CustomerID
+-- OPTION (HASH JOIN)
