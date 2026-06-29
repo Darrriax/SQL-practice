@@ -30,3 +30,16 @@ Develop SOL-based analytics to deliver detailed insights into:
 - **Sales Trends**
 
 These insights empower stakeholders with key business metrics, enabling strategic decision-making.
+
+---
+##### 1. Define DataWareHouse Architecture & Initialize DB
+![DWH](./SQL-Data-Warehouse-Project/Diagrams/DWHArchitecture/DWH.png)
+[Database initialization](./SQL-Data-Warehouse-Project/Scripts/init_database.sql)
+
+##### 2. Data Flow Diagram, Create & Load BRONZE LAYER
+![DFD](./SQL-Data-Warehouse-Project/Diagrams/DataFlow/DFD.png)
+[Bronze Layer](./SQL-Data-Warehouse-Project/Scripts/Bronze/)
+
+##### 3. Analyze Data (Data Integration), Create & Load SILVER LAYER
+![DataIntegration](./SQL-Data-Warehouse-Project/Diagrams/DataIntegration/DataIntegration.png)
+[Silver Layer](./SQL-Data-Warehouse-Project/Scripts/Silver/)
